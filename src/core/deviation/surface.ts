@@ -10,6 +10,7 @@
 
 import * as THREE from 'three'
 import { INTERSECTED, MeshBVH, NOT_INTERSECTED, SAH } from 'three-mesh-bvh'
+import { rigidApply, type Rigid } from './rigid'
 
 /** Where on a triangle the closest point landed. Which normal is the correct
  *  one to sign a distance with depends on this: a point that projects into the
@@ -377,6 +378,34 @@ export class NominalSurface {
     if (bestFace < 0) return false
     this.fillHit(x, y, z, bestFace, out)
     return true
+  }
+
+  /** The BVH's packed node buffers (32 bytes a node, three-mesh-bvh's own
+   *  layout), for a search that runs somewhere else — the GPU. */
+  packedBvh(): ArrayBuffer[] {
+    return (this.bvh as unknown as { _roots: ArrayBuffer[] })._roots
+  }
+
+  /** The signed distances of computeDeviation, given the nearest triangle of
+   *  every point already found (by the GPU): the closest point on that
+   *  triangle and the sign from its feature's pseudonormal, as closest() reads
+   *  them. NaN where no triangle was found (0xffffffff). */
+  signOnFaces(scanPositions: Float32Array, transform: Rigid, face: Uint32Array): Float32Array {
+    const n = scanPositions.length / 3
+    const values = new Float32Array(n)
+    const hit = emptyHit()
+    const p = new Float64Array(3)
+    for (let v = 0; v < n; v++) {
+      const f = face[v]
+      if (f === 0xffffffff) {
+        values[v] = NaN
+        continue
+      }
+      rigidApply(transform, scanPositions[v * 3], scanPositions[v * 3 + 1], scanPositions[v * 3 + 2], p)
+      this.fillHit(p[0], p[1], p[2], f, hit)
+      values[v] = hit.signed
+    }
+    return values
   }
 
   /** Resolve the closest point on one known triangle, and the pseudonormal of
