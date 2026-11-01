@@ -318,7 +318,7 @@ export class NominalSurface {
     this.probe.set(x, y, z)
     const hit = this.bvh.closestPointToPoint(this.probe, this.target, 0, maxDistance)
     if (!hit) return false
-    this.fillHit(x, y, z, hit.faceIndex, out)
+    this.hitOnFace(x, y, z, hit.faceIndex, out)
     return true
   }
 
@@ -376,7 +376,7 @@ export class NominalSurface {
       },
     })
     if (bestFace < 0) return false
-    this.fillHit(x, y, z, bestFace, out)
+    this.hitOnFace(x, y, z, bestFace, out)
     return true
   }
 
@@ -402,15 +402,16 @@ export class NominalSurface {
         continue
       }
       rigidApply(transform, scanPositions[v * 3], scanPositions[v * 3 + 1], scanPositions[v * 3 + 2], p)
-      this.fillHit(p[0], p[1], p[2], f, hit)
+      this.hitOnFace(p[0], p[1], p[2], f, hit)
       values[v] = hit.signed
     }
     return values
   }
 
-  /** Resolve the closest point on one known triangle, and the pseudonormal of
-   *  whichever feature of it that point belongs to. */
-  private fillHit(x: number, y: number, z: number, f: number, out: ClosestHit): void {
+  /** Resolve the closest point on one known triangle — the one a search
+   *  elsewhere (the GPU) found nearest — and the pseudonormal of whichever
+   *  feature of it that point belongs to, as closest() would read them. */
+  hitOnFace(x: number, y: number, z: number, f: number, out: ClosestHit): void {
     const p = this.positions
     const idx = this.index
     const ia = idx[f * 3], ib = idx[f * 3 + 1], ic = idx[f * 3 + 2]

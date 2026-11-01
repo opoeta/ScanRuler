@@ -203,3 +203,33 @@ export async function gpuDeviation(closest: GpuClosest, surface: NominalSurface,
   const values = surface.signOnFaces(scanPositions, transform, face)
   return { values, d2, ms: { ...ms, sign: performance.now() - t0 } }
 }
+
+/** The one device and the one uploaded surface a worker keeps between maps. */
+let device: GPUDevice | null | undefined
+let held: { surface: NominalSurface; closest: GpuClosest } | null = null
+
+/**
+ * The nearest triangle of every point, searched on the GPU — for
+ * computeDeviation's `nearest` — or null where there is no WebGPU, the
+ * reference does not fit the device, or anything on the way fails: the
+ * caller then searches on the CPU as before, and the map is the same either
+ * way. The device and the uploaded reference are kept for the next map; a
+ * failure lets both go, so the next call tries afresh.
+ */
+export async function gpuNearestFaces(surface: NominalSurface, points: Float32Array, transform: Rigid): Promise<Uint32Array | null> {
+  try {
+    if (device === undefined) device = await gpuDevice()
+    if (!device) return null
+    if (held && held.surface !== surface) {
+      held.closest.destroy()
+      held = null
+    }
+    if (!held) held = { surface, closest: gpuClosest(device, surface) }
+    return (await held.closest.query(points, transform)).face
+  } catch {
+    held?.closest.destroy()
+    held = null
+    device = undefined
+    return null
+  }
+}

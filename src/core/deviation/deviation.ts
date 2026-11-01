@@ -75,6 +75,10 @@ export interface DeviationOptions {
    *  may be from facing the way the scan faces there. Null, or no `normals`,
    *  takes the nearest surface whatever it faces. */
   maxNormalDeviation?: number | null
+  /** The nearest triangle of every vertex, found already (on the GPU, see
+   *  gpu/closestPoint.ts); 0xffffffff where none was. The search is then
+   *  skipped and only the reading — distance, sign, facing — is done here. */
+  nearest?: Uint32Array
 }
 
 /**
@@ -103,7 +107,7 @@ export function computeDeviation(
   surface: NominalSurface,
   scanPositions: Float32Array,
   transform: Rigid,
-  { onProgress, directions, normals, maxNormalDeviation = null }: DeviationOptions = {},
+  { onProgress, directions, normals, maxNormalDeviation = null, nearest }: DeviationOptions = {},
 ): Float32Array {
   const n = scanPositions.length / 3
   const values = new Float32Array(n)
@@ -118,19 +122,27 @@ export function computeDeviation(
 
   for (let v = 0; v < n; v++) {
     rigidApply(transform, scanPositions[v * 3], scanPositions[v * 3 + 1], scanPositions[v * 3 + 2], p)
-    let found: boolean
-    if (minFacing === null) found = surface.closest(p[0], p[1], p[2], hit)
-    else {
+    let found = false
+    let facing = false
+    if (minFacing !== null) {
       // The scan's own normal, carried into the reference's frame.
-      rigidRotate(
-        transform,
-        outward * normals![v * 3],
-        outward * normals![v * 3 + 1],
-        outward * normals![v * 3 + 2],
-        sn,
-      )
-      const read = closestFacingWay(surface, p[0], p[1], p[2], sn[0], sn[1], sn[2], minFacing, hit, Infinity, reach)
-      found = read === 'nearest' || read === 'refaced'
+      rigidRotate(transform, outward * normals![v * 3], outward * normals![v * 3 + 1], outward * normals![v * 3 + 2], sn)
+    }
+    if (nearest) {
+      const f = nearest[v]
+      found = f !== 0xffffffff
+      if (found) {
+        surface.hitOnFace(p[0], p[1], p[2], f, hit)
+        facing = minFacing === null || sn[0] * hit.nx + sn[1] * hit.ny + sn[2] * hit.nz >= minFacing
+      }
+    }
+    // Without the GPU's answer — or with one that faces away — the search runs here.
+    if (!nearest || (found && !facing)) {
+      if (minFacing === null) found = surface.closest(p[0], p[1], p[2], hit)
+      else {
+        const read = closestFacingWay(surface, p[0], p[1], p[2], sn[0], sn[1], sn[2], minFacing, hit, Infinity, reach)
+        found = read === 'nearest' || read === 'refaced'
+      }
     }
     if (!found) {
       values[v] = NaN

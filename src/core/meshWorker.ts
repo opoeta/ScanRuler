@@ -30,6 +30,7 @@ import {
 } from './deviation/align'
 import type { Steps } from './deviation/steps'
 import { computeDeviation, defaultMaxDistance, suggestRange } from './deviation/deviation'
+import { gpuNearestFaces } from './gpu/closestPoint'
 import { rigidApplyToPoints, rigidInvert, rigidRotateVectors, type Rigid } from './deviation/rigid'
 import { meshArea, meshLongEdges, readReference, sampleSpacing, subdivideForMap } from './deviation/onReference'
 import { buildSolidIndex, computeThickness, suggestThicknessScale } from './thickness/thickness'
@@ -887,10 +888,12 @@ function handle(msg: Exclude<WorkerRequest, { type: 'align-abort' }>): void {
       })
       return
     }
-    try {
+    const { positions, normals, bboxDiag } = graph
+    const surface = nominal
+    const finish = (nearest?: Uint32Array) => {
       let lastPercent = -1
-      const directions = new Int8Array(graph.positions.length)
-      const values = computeDeviation(nominal, graph.positions, msg.transform, {
+      const directions = new Int8Array(positions.length)
+      const values = computeDeviation(surface, positions, msg.transform, {
         onProgress: (f) => {
           const percent = Math.round(f * 100)
           if (percent === lastPercent) return
@@ -900,10 +903,11 @@ function handle(msg: Exclude<WorkerRequest, { type: 'align-abort' }>): void {
         directions,
         // Rotated along with the positions whenever an alignment is baked in,
         // so they stand in the same frame the transform starts from.
-        normals: graph.normals,
+        normals,
         maxNormalDeviation: msg.facingDeg === null ? null : (msg.facingDeg * Math.PI) / 180,
+        nearest,
       })
-      const suggestedMaxDistance = defaultMaxDistance(graph.bboxDiag)
+      const suggestedMaxDistance = defaultMaxDistance(bboxDiag)
       post(
         {
           type: 'deviation-ok',
@@ -915,11 +919,32 @@ function handle(msg: Exclude<WorkerRequest, { type: 'align-abort' }>): void {
         },
         [values.buffer, directions.buffer],
       )
-    } catch (e) {
-      post({ type: 'error', requestId: msg.requestId, message: errorText(e) })
     }
+    const fail = (e: unknown) => post({ type: 'error', requestId: msg.requestId, message: errorText(e) })
+    // Without WebGPU the map is answered at once, as it always was. With it,
+    // the search runs on the GPU and the reading on the CPU; awaiting the GPU
+    // holds the queue until the map is posted.
+    if (!(globalThis.navigator as Navigator | undefined)?.gpu) {
+      try {
+        finish()
+      } catch (e) {
+        fail(e)
+      }
+      return
+    }
+    holding = true
+    progress('Measuring the scan against the reference — searching on the GPU…')
+    gpuNearestFaces(surface, positions, msg.transform)
+      .then((nearest) => finish(nearest ?? undefined))
+      .catch(fail)
+      .finally(() => {
+        holding = false
+        drainQueue()
+      })
+    return
   }
 }
+
 
 /** An index past the end of the scan would read whatever follows the position
  *  buffer and fit to it. The selection comes from the render thread's copy of
